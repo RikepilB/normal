@@ -284,6 +284,78 @@ describe("API Key WhatsApp Conversations", () => {
       personalAccountId: accountId,
     });
 
+  test("resolves named groups only with retained activity and message-read permission", async () => {
+    await database.query(
+      `UPDATE public.mcp_authorizations SET scopes=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
+      [authorizationId],
+    );
+    await database.query(
+      `UPDATE public.api_keys SET permissions=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
+      [apiKeyId],
+    );
+    const readMcp = () =>
+      repository.listGroups({
+        ...mcpAuthorization,
+        connectionPublicId,
+        observedAt,
+        searchIndex: null,
+      });
+    const readApi = () =>
+      repository.listApiKeyGroups({
+        apiKeyGrantId: apiKeyId,
+        personalAccountId: accountId,
+        connectionPublicId,
+        observedAt,
+        searchIndex: null,
+        permissions: ["directory:read", "messages:read"],
+      });
+    for (const read of [readMcp, readApi]) {
+      expect((await read())?.groups).toMatchObject([
+        {
+          publicId: groupPublicId,
+          conversationPublicId: groupConversationPublicId,
+        },
+      ]);
+    }
+    await database.query(
+      `UPDATE public.mcp_authorizations SET scopes=ARRAY['directory:read']::text[] WHERE id=$1`,
+      [authorizationId],
+    );
+    await database.query(
+      `UPDATE public.api_keys SET permissions=ARRAY['directory:read']::text[] WHERE id=$1`,
+      [apiKeyId],
+    );
+    for (const read of [readMcp, readApi]) {
+      expect((await read())?.groups).toMatchObject([
+        { publicId: groupPublicId, conversationPublicId: null },
+      ]);
+    }
+    await database.query(
+      `UPDATE public.mcp_authorizations SET scopes=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
+      [authorizationId],
+    );
+    await database.query(
+      `UPDATE public.api_keys SET permissions=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
+      [apiKeyId],
+    );
+    await database.query(
+      `DELETE FROM public.stored_messages WHERE conversation_id=$1`,
+      [groupConversationId],
+    );
+    for (const read of [readMcp, readApi]) {
+      expect((await read())?.groups).toMatchObject([
+        { publicId: groupPublicId, conversationPublicId: null },
+      ]);
+    }
+    await database.query(
+      `UPDATE public.whatsapp_groups SET joined=false WHERE public_id=$1`,
+      [groupPublicId],
+    );
+    for (const read of [readMcp, readApi]) {
+      expect((await read())?.groups).toEqual([]);
+    }
+  });
+
   test("lists the same activity-ordered conversations through MCP and API Key grants", async () => {
     const mcpPage = await repository.listChats({
       ...mcpAuthorization,
