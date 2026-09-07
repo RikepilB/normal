@@ -66,13 +66,11 @@ MCP resource support varies by client; a media reference is not automatically a
 local file. Use the documented authenticated resource or REST access path rather
 than treating the protected URI as a public download URL.
 
-A local evidence skill such as Voidscape can process an approved local media
-file through `inspect -> preview -> read`. Voidscape is separate from Normal: it
-does not own, monitor, or reconnect the WhatsApp Connection. Preview exposes cost and permission
-requirements. Cloud transfer and a first model download need separate current
-approval. Preserve its manifest-defined timestamp, image or article citations and
-link the resulting evidence bundle back to the original message. Normal supplies
-message access; the client performs this processing.
+A user may choose a separate local media processor for an approved local file.
+That processor has its own cost, privacy, and consent rules; it does not own,
+monitor, or reconnect the WhatsApp Connection. Preserve any generated evidence
+references and link them back to the originating message. Normal supplies message
+access; the client performs this processing.
 
 ## Save and resume deliberately
 
