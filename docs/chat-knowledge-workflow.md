@@ -20,7 +20,11 @@ history: exclusions purge stored history, and re-enabling permits future activit
 ## Resolve and read one named group
 
 1. Discover available Normal tools. List Connections and select the intended one.
-   Connected means connection state, not complete ingestion or message-read permission.
+   `connected` only means Normal currently considers the Connection active. It does
+   not prove the session will remain stable, ingestion is current, a message-read
+   grant is valid, or `list_chats` is available. If the user repeatedly reconnects,
+   record the time and exact state change as an availability incident; do not keep
+   telling them to reconnect without a newly disconnected state.
 2. Call `list_groups` with the group name. Resolve ambiguity before reading.
 3. Check the advertised schema. If it supplies a non-null `conversation_id`, use
    it. Otherwise call `list_chats` with `kind: group`, follow compatible cursors
@@ -33,10 +37,14 @@ history: exclusions purge stored history, and re-enabling permits future activit
    message IDs, history start/reason, gaps, and unfinished pagination. Preserve
    truncation and media-availability flags. A page limit is not a complete transcript.
 
-A failing `list_chats` call is an error, not proof of zero retained messages.
-Search matches exact normalized words; zero matches cannot establish an empty
-Message Store. Index backfill completion is not provider history backfill. Known
-gaps qualify results; absence of known gaps does not certify complete delivery.
+A failing `list_chats` call is an error, not proof of zero retained messages. A
+Connection can report `connected` while chat listing is unavailable; report that
+as a connector outage with the error, time, request shape, and an opaque support
+reference if one is available. It is not evidence that the user must reauthorize,
+that their local host caused the failure, or that history is empty. Search matches
+exact normalized words; zero matches cannot establish an empty Message Store. Index
+backfill completion is not provider history backfill. Known gaps qualify results;
+absence of known gaps does not certify complete delivery.
 
 ## Produce a useful report
 
@@ -59,7 +67,8 @@ local file. Use the documented authenticated resource or REST access path rather
 than treating the protected URI as a public download URL.
 
 A local evidence skill such as Voidscape can process an approved local media
-file through `inspect -> preview -> read`. Preview exposes cost and permission
+file through `inspect -> preview -> read`. Voidscape is separate from Normal: it
+does not own, monitor, or reconnect the WhatsApp Connection. Preview exposes cost and permission
 requirements. Cloud transfer and a first model download need separate current
 approval. Preserve its manifest-defined timestamp, image or article citations and
 link the resulting evidence bundle back to the original message. Normal supplies
@@ -99,7 +108,9 @@ history start/reason, known gaps, unfinished pagination and truncation. Do not
 call this the full chat unless the evidence supports that exact scope. Connected
 does not prove ingestion is complete. Zero search matches do not prove an empty
 store. If a tool fails, give its exact error, inputs with private IDs redacted,
-and what remains unverified; do not repeatedly retry or guess an auth fix.
+the current Connection state, and what remains unverified. If `list_chats` fails
+while the Connection is connected, report a connector outage. Do not repeatedly
+tell me to reconnect or guess an auth fix unless it has newly disconnected.
 
 Give me a concise discussion summary, decisions, open questions, opportunities,
 and useful links grouped by topic. Cite message IDs and timestamps. Preserve
