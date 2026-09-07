@@ -309,6 +309,24 @@ describe("API Key WhatsApp Conversations", () => {
         searchIndex: null,
         permissions: ["directory:read", "messages:read"],
       });
+    await expect(
+      repository.listGroups({
+        ...mcpAuthorization,
+        connectionPublicId: otherConnectionPublicId,
+        observedAt,
+        searchIndex: null,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      repository.listApiKeyGroups({
+        apiKeyGrantId: apiKeyId,
+        personalAccountId: accountId,
+        connectionPublicId: otherConnectionPublicId,
+        observedAt,
+        searchIndex: null,
+        permissions: ["directory:read", "messages:read"],
+      }),
+    ).resolves.toBeNull();
     for (const read of [readMcp, readApi]) {
       expect((await read())?.groups).toMatchObject([
         {
@@ -354,6 +372,66 @@ describe("API Key WhatsApp Conversations", () => {
     for (const read of [readMcp, readApi]) {
       expect((await read())?.groups).toEqual([]);
     }
+  });
+
+  test("omits excluded groups from named group resolution", async () => {
+    await database.query(
+      `UPDATE public.mcp_authorizations SET scopes=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
+      [authorizationId],
+    );
+    await database.query(
+      `UPDATE public.api_keys SET permissions=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
+      [apiKeyId],
+    );
+    const provider: McpToolConnectionProvider &
+      PersonalAccountConnectionProvider = {
+      withConnection: async (use) => {
+        await database.exec("SET ROLE whatsapp_api_runtime");
+        try {
+          return await use(database);
+        } finally {
+          await database.exec("RESET ROLE");
+        }
+      },
+    };
+    const exclusions = makeRecipientExclusionRepository(provider);
+    const prepared = await exclusions.prepareTransition({
+      clerkUserId,
+      connectionPublicId,
+      excluded: true,
+      expectedExcluded: false,
+      idempotencyKey: "idem-conversations-83-group-exclude",
+      recipientPublicId: groupPublicId,
+    });
+    expect(prepared).toMatchObject({ outcome: "prepared" });
+    await expect(
+      exclusions.finalizeTransition({
+        clerkUserId,
+        connectionPublicId,
+        observedAt: observedAt.toISOString(),
+        recipientPublicId: groupPublicId,
+        transitionId: prepared?.transitionId ?? "",
+      }),
+    ).resolves.toMatchObject({ excluded: true });
+
+    await expect(
+      repository.listGroups({
+        ...mcpAuthorization,
+        connectionPublicId,
+        observedAt,
+        searchIndex: null,
+      }),
+    ).resolves.toMatchObject({ groups: [] });
+    await expect(
+      repository.listApiKeyGroups({
+        apiKeyGrantId: apiKeyId,
+        personalAccountId: accountId,
+        connectionPublicId,
+        observedAt,
+        searchIndex: null,
+        permissions: ["directory:read", "messages:read"],
+      }),
+    ).resolves.toMatchObject({ groups: [] });
   });
 
   test("lists the same activity-ordered conversations through MCP and API Key grants", async () => {

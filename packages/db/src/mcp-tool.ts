@@ -219,7 +219,7 @@ export interface McpToolChatPage {
 }
 
 export interface McpToolGroupRecord {
-  readonly conversationPublicId?: string | null;
+  readonly conversationPublicId: string | null;
   readonly displayName: {
     readonly ciphertext: string;
     readonly keyVersion: number;

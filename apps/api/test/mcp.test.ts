@@ -754,6 +754,7 @@ const makeHarness = (
                     },
                     id: "30000000-0000-4000-8000-000000000040",
                     publicId: "grp_aaaaaaaaaaaaaaaaaaaaa",
+                    conversationPublicId: null,
                   },
                 ],
                 partial: false,
