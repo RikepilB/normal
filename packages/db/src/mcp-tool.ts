@@ -1208,20 +1208,30 @@ const historyWindow = (
   };
 };
 
-const groupConversationPublicId = (canRead: boolean) => sql<string | null>`
+const groupConversationPublicId = (canRead: boolean, observedAt: Date) => sql<
+  string | null
+>`
   CASE WHEN ${canRead} THEN (
     SELECT conversations.public_id
     FROM public.whatsapp_conversations conversations
-    WHERE conversations.personal_account_id = ${whatsappGroupsInApp.personalAccountId}
-      AND conversations.whatsapp_connection_id = ${whatsappGroupsInApp.whatsappConnectionId}
+    JOIN public.whatsapp_connections connections
+      ON connections.personal_account_id = conversations.personal_account_id
+      AND connections.id = conversations.whatsapp_connection_id
+    WHERE conversations.personal_account_id = whatsapp_groups.personal_account_id
+      AND conversations.whatsapp_connection_id = whatsapp_groups.whatsapp_connection_id
       AND conversations.kind = 'group'
-      AND conversations.recipient_locator = ${whatsappGroupsInApp.providerLocator}
+      AND conversations.recipient_locator = whatsapp_groups.provider_locator
       AND EXISTS (
         SELECT 1 FROM public.stored_messages retained
         WHERE retained.personal_account_id = conversations.personal_account_id
           AND retained.whatsapp_connection_id = conversations.whatsapp_connection_id
           AND retained.conversation_id = conversations.id
           AND retained.content_expired_at IS NULL
+          AND retained.sent_at >= greatest(
+            connections.created_at,
+            ${observedAt}::timestamptz
+              - connections.message_retention_days * interval '24 hours'
+          )
       )
     ORDER BY conversations.created_at
     LIMIT 1
@@ -3467,6 +3477,7 @@ export const makeMcpToolRepository = (
           .select({
             conversation_public_id: groupConversationPublicId(
               scopes.includes("messages:read"),
+              input.observedAt,
             ),
             id: whatsappGroupsInApp.id,
             public_id: whatsappGroupsInApp.publicId,
@@ -4224,6 +4235,7 @@ export const makeMcpToolRepository = (
               input.permissions.includes("messages:read") &&
                 Array.isArray(materialRows[0]?.grant_permissions) &&
                 materialRows[0].grant_permissions.includes("messages:read"),
+              input.observedAt,
             ),
             id: whatsappGroupsInApp.id,
             public_id: whatsappGroupsInApp.publicId,

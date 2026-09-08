@@ -58,12 +58,12 @@ describe("API Key WhatsApp Conversations", () => {
       `INSERT INTO public.whatsapp_connections (
           id, personal_account_id, webhook_ingress_id,
           display_name_fallback, public_id, number_suffix, state,
-          state_changed_at
+          state_changed_at, created_at
         ) VALUES
           ($1, $2, '30000000-0000-4000-8000-000000000083', 'Bright Badger',
-           $3, '1234', 'connected', $5),
+           $3, '1234', 'connected', $5, $5::timestamptz - interval '1 day'),
           ($6, $2, '30000000-0000-4000-8000-000000000084', 'Calm Falcon',
-           $4, '5678', 'connected', $5)`,
+           $4, '5678', 'connected', $5, $5::timestamptz - interval '1 day')`,
       [
         connectionId,
         accountId,
@@ -356,6 +356,26 @@ describe("API Key WhatsApp Conversations", () => {
       `UPDATE public.api_keys SET permissions=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
       [apiKeyId],
     );
+    // The same group locator on an unselected Connection must not supply activity.
+    await database.query(
+      `UPDATE public.whatsapp_conversations
+       SET whatsapp_connection_id=$2, kind='group', recipient_locator=$3, recipient_public_id=$4
+       WHERE id=$1`,
+      [silentConversationId, otherConnectionId, groupLocator, groupPublicId],
+    );
+    await database.query(
+      `INSERT INTO public.stored_messages (
+         id, personal_account_id, whatsapp_connection_id, conversation_id,
+         public_id, message_identity, direction, sent_at, content_type,
+         content_ciphertext_version, content_key_version, content_nonce,
+         content_ciphertext, received_at, webhook_item_identity
+       ) SELECT '71000000-0000-4000-8000-000000000086', personal_account_id, $2, $3,
+         'msg_123456789012345678986', message_identity, direction, sent_at, content_type,
+         content_ciphertext_version, content_key_version, content_nonce,
+         content_ciphertext, received_at, webhook_item_identity
+       FROM public.stored_messages WHERE conversation_id=$1`,
+      [groupConversationId, otherConnectionId, silentConversationId],
+    );
     await database.query(
       `DELETE FROM public.stored_messages WHERE conversation_id=$1`,
       [groupConversationId],
@@ -373,6 +393,83 @@ describe("API Key WhatsApp Conversations", () => {
       expect((await read())?.groups).toEqual([]);
     }
   });
+
+  test.each(["OAuth", "API Key"])(
+    "%s group resolution applies the current history window before cleanup",
+    async (grant) => {
+      await database.query(
+        `UPDATE public.mcp_authorizations SET scopes=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
+        [authorizationId],
+      );
+      await database.query(
+        `UPDATE public.api_keys SET permissions=ARRAY['directory:read','messages:read']::text[] WHERE id=$1`,
+        [apiKeyId],
+      );
+      await database.query(
+        `UPDATE public.whatsapp_connections SET created_at='2026-06-01T00:00:00Z', message_retention_days=30 WHERE id=$1`,
+        [connectionId],
+      );
+      const read = (at = observedAt) =>
+        grant === "OAuth"
+          ? repository.listGroups({
+              ...mcpAuthorization,
+              connectionPublicId,
+              observedAt: at,
+              searchIndex: null,
+            })
+          : repository.listApiKeyGroups({
+              apiKeyGrantId: apiKeyId,
+              personalAccountId: accountId,
+              connectionPublicId,
+              observedAt: at,
+              searchIndex: null,
+              permissions: ["directory:read", "messages:read"],
+            });
+      const expectConversation = async (
+        expected: string | null,
+        at = observedAt,
+      ) => {
+        expect((await read(at))?.groups).toMatchObject([
+          { publicId: groupPublicId, conversationPublicId: expected },
+        ]);
+      };
+      // Message reads include the exact retention boundary, but not older rows.
+      const sentAt = new Date(observedAt.valueOf() - 30 * 86_400_000);
+      await database.query(
+        `UPDATE public.stored_messages SET sent_at=$2 WHERE conversation_id=$1`,
+        [groupConversationId, sentAt],
+      );
+      await expectConversation(groupConversationPublicId);
+      await expectConversation(null, new Date(observedAt.valueOf() + 1));
+
+      // Shortening the policy takes effect without waiting for expiration work.
+      await database.query(
+        `UPDATE public.whatsapp_connections SET message_retention_days=7 WHERE id=$1`,
+        [connectionId],
+      );
+      await expectConversation(null);
+
+      // Retain-until-deletion still respects the Connection's history start.
+      await database.query(
+        `UPDATE public.whatsapp_connections SET message_retention_days=NULL WHERE id=$1`,
+        [connectionId],
+      );
+      await expectConversation(groupConversationPublicId);
+      await database.query(
+        `UPDATE public.whatsapp_connections SET created_at=$2 WHERE id=$1`,
+        [connectionId, new Date(sentAt.valueOf() + 1)],
+      );
+      await expectConversation(null);
+      expect(
+        (
+          await database.query(
+            `SELECT content_expired_at FROM public.stored_messages WHERE conversation_id=$1`,
+            [groupConversationId],
+          )
+        ).rows,
+      ).toEqual([{ content_expired_at: null }]);
+    },
+  );
 
   test("omits excluded groups from named group resolution", async () => {
     await database.query(
