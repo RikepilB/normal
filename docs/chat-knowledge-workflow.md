@@ -157,6 +157,13 @@ result complete unless the evidence supports that exact scope. Connected does no
 chat listing or ingestion is healthy. Zero search results do not prove there are
 no retained messages.
 
+If a tool fails, report its safe error code and message, the observed Connection
+state, and what remains unverified. If list_chats returns service_unavailable
+while the Connection is connected, report a connector outage affecting chat
+listing. Do not infer an OAuth problem, a local-host problem, or empty history
+from that failure. Do not repeatedly recommend reconnection unless the Connection
+has newly become disconnected.
+
 Give me a concise answer with decisions, open questions, promises, and useful
 references when relevant. Support each material message-derived claim with its
 originating message IDs and timestamps, keeping those references within this
