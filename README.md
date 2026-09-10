@@ -161,6 +161,7 @@ Start with these documents:
 * [`docs/mcp-contract.md`](docs/mcp-contract.md) defines MCP tools, resources, authorization, errors, and pagination.
 * [`docs/configuration.md`](docs/configuration.md) lists runtime configuration and secret ownership.
 * [`docs/testing.md`](docs/testing.md) explains the public boundary test strategy.
+* [`docs/mcp-client-qa.md`](docs/mcp-client-qa.md) is the manual MCP Client QA suite run from a real MCP Client.
 * [`docs/whatsapp-provider-seam.md`](docs/whatsapp-provider-seam.md) defines the provider boundary.
 * [`docs/stored-media-container.md`](docs/stored-media-container.md) describes encrypted Stored Media.
 * [`docs/adr`](docs/adr) records architectural decisions.
