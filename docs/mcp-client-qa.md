@@ -8,9 +8,10 @@ client holding a live grant against a real WhatsApp Connection — initial
 Directory sync, Ingestion Gap reporting, Connection state transitions, cursor
 binding across grants, and Client Confirmation.
 
-[`docs/mcp-contract.md`](mcp-contract.md) is the oracle. Every case below cites
-the rule it tests. If an observation disagrees with a case, the contract
-decides: either the server is wrong or the case is, and the case is the more
+[`docs/mcp-contract.md`](mcp-contract.md) is the oracle. Every case names the
+rule it tests, and each section below links the contract section that defines
+it, so an expectation can be traced back in one hop. If an observation
+disagrees with a case, the contract decides: either the server is wrong or the case is, and the case is the more
 likely of the two. Do not "fix" a case to match observed behavior without
 changing the contract first.
 
@@ -54,9 +55,27 @@ A run needs, at minimum:
 Record, per run: UTC start and end, client name and version, grant kinds, scope
 sets, Connection count and states, and whether section M ran.
 
-Sections B through L are read-only and safe to run against a production
-Personal Account. **Section M sends real messages to real people.** Run it only
-against a Connection whose recipients have consented to test traffic.
+### What each section changes
+
+No section is purely read-only, so do not treat any of them as free.
+
+Every tool call in every section creates an Activity Log entry and consumes
+request-frequency quota, because each one begins a protected operation. Beyond
+that:
+
+| Section | Effect beyond the Activity Log |
+| --- | --- |
+| B, C, D, E1-E6, F, J, K, N | None. Safe against a production Personal Account. |
+| G, H | Consume `READ_MESSAGE_RECORDS_PER_DAY`, accounted on records actually returned and shared between `read_messages` and `search_messages`. Tombstones count. |
+| E7 | **Changes WhatsApp state.** Leaves a real group. Use a disposable group. |
+| I1-I7 | Each `resources/read` reserves the media's full verified plaintext size before decrypting. |
+| I8 | Asserts that reservation, so it consumes it deliberately, twice. |
+| L | **Changes Connection lifecycle state.** L1, L2, and L5 link, disconnect, and restore a real WhatsApp Connection. Never run L against a Connection anyone depends on. |
+| M | **Sends real messages to real people.** Requires `messages:send` and recipient consent. |
+
+Sections G, H, and I consume quota but change nothing outside Normal. Sections
+E7, L, and M change state outside it. Run those three only against a Personal
+Account and Connection set aside for testing.
 
 ## Case tables
 
@@ -66,6 +85,8 @@ values are returned as `null`, not omitted", so a missing key is a failure even
 when the value would have been null.
 
 ### B. Discovery and scope gating
+
+Contract: [Scope Map](mcp-contract.md#scope-map), [Common Rules](mcp-contract.md#common-rules), [Stored Media Resources](mcp-contract.md#stored-media-resources)
 
 | ID | Action | Expected |
 | --- | --- | --- |
@@ -78,6 +99,8 @@ when the value would have been null.
 
 ### C. `list_connections`
 
+Contract: [`list_connections`](mcp-contract.md#list_connections)
+
 | ID | Action | Expected |
 | --- | --- | --- |
 | C1 | Call with `{}` | Success. Input is an empty object; the tool is not paginated. |
@@ -87,6 +110,8 @@ when the value would have been null.
 | C5 | Call while a Connection is deleting | That Connection is absent. Deleting Connections are immediately revoked and omitted. |
 
 ### D. `list_contacts`
+
+Contract: [`list_contacts`](mcp-contract.md#list_contacts), [Common Rules](mcp-contract.md#common-rules)
 
 | ID | Action | Expected |
 | --- | --- | --- |
@@ -102,6 +127,8 @@ when the value would have been null.
 
 ### E. `list_groups`
 
+Contract: [`list_groups`](mcp-contract.md#list_groups)
+
 | ID | Action | Expected |
 | --- | --- | --- |
 | E1 | Default call | `groups` entries carry `group_id`, `display_name`, `conversation_id`. No description, profile URL, or roster. |
@@ -113,6 +140,8 @@ when the value would have been null.
 | E7 | Leave a group, then re-list | The group drops out of the projection once reconciled. Note the observed lag. |
 
 ### F. `list_chats`
+
+Contract: [`list_chats`](mcp-contract.md#list_chats)
 
 | ID | Action | Expected |
 | --- | --- | --- |
@@ -126,6 +155,8 @@ when the value would have been null.
 | F8 | Call on a Connection with **zero** observed Stored Messages | Success with `chats: []`, `has_more: false`, `next_cursor: null`. See defect D-1 — this currently fails. |
 
 ### G. `read_messages`
+
+Contract: [`read_messages`](mcp-contract.md#read_messages), [Stored Media Resources](mcp-contract.md#stored-media-resources)
 
 | ID | Action | Expected |
 | --- | --- | --- |
@@ -142,6 +173,8 @@ when the value would have been null.
 | G11 | Read a Conversation spanning a known Ingestion Gap | The intersecting gap appears with a cause from the documented set. `ends_at` null for an active interval. |
 
 ### H. `search_messages`
+
+Contract: [`search_messages`](mcp-contract.md#search_messages)
 
 | ID | Action | Expected |
 | --- | --- | --- |
@@ -161,9 +194,11 @@ when the value would have been null.
 
 ### I. Stored Media resources
 
+Contract: [Stored Media Resources](mcp-contract.md#stored-media-resources)
+
 | ID | Action | Expected |
 | --- | --- | --- |
-| I1 | `resources/read` on a `resource_uri` from `read_messages` | Binary `blob` with normalized MIME, `cacheScope: private`, zero TTL. |
+| I1 | `resources/read` on a `resource_uri` from `read_messages` | Binary `blob` with normalized MIME, `cacheScope: private`, zero cache TTL, and HTTP `Cache-Control: no-store`. |
 | I2 | Same URI with an appended path segment, query string, or fragment | Rejected. The complete URI is parsed strictly. |
 | I3 | Same URI with percent-encoded traversal | Rejected. |
 | I4 | URI recombining a valid `message_id` with another message's `media_id` | Resource-not-found. Cross-linked handles share the not-found response. |
@@ -171,8 +206,11 @@ when the value would have been null.
 | I6 | URI for media on a Connection outside the grant | Same not-found response. |
 | I7 | Inspect the response for any URL | No provider URL, public R2 URL, presigned URL, or fetchable HTTPS resource. |
 | I8 | Read the same media twice and check the Activity Log | Each read creates an Activity Log entry and reserves the media's full verified size before decryption. |
+| I9 | Read a URI under grant A, switch the client to grant B, request the same URI | Grant B is rejected and no cached blob is served. Handles grant no authority, and every call rechecks scope, connection, and the message-media ownership chain against current state. `no-store` is what makes the client-side half of this hold. |
 
 ### J. Pagination and cursor binding
+
+Contract: [Pagination](mcp-contract.md#pagination)
 
 | ID | Action | Expected |
 | --- | --- | --- |
@@ -187,17 +225,21 @@ when the value would have been null.
 
 ### K. Freshness and initial sync
 
+Contract: [Pagination](mcp-contract.md#pagination), [`search_messages`](mcp-contract.md#search_messages)
+
 Run these against a Connection linked within the last few minutes.
 
 | ID | Action | Expected |
 | --- | --- | --- |
 | K1 | `list_contacts` and `list_groups` immediately after linking | Fields present and internally consistent. Record `as_of`, `stale`, `partial` and the wall-clock offset from link time. |
 | K2 | Repeat every minute until both stabilize | Record when each tool first returns a non-empty page and when `partial` first turns false. Contacts and groups may converge at different times. |
-| K3 | While a tool returns an empty page during initial sync | `partial: true`. Note whether an empty page is distinguishable from a genuinely empty account from the response alone. See defect D-3. |
-| K4 | After the Connection later goes unavailable | Record `as_of`, `stale`, `partial` again. Note whether these differ from the initial-sync case. See defect D-3. |
+| K3 | While a tool returns an empty page during initial sync | `partial: true`, which does separate this from a fully synced empty account — that case is `partial: false`. Record both flags. |
+| K4 | After the Connection later goes unavailable | Record `as_of`, `stale`, `partial` again and compare against K3. Expect the same `stale: true, partial: true` pair for a state that waiting will never resolve. That collision is defect D-3. |
 | K5 | `search_messages` `coverage` during and after backfill | `backfill_complete` false then true; `partial_reasons` tracks `index_backfill` accordingly. |
 
 ### L. Connection lifecycle
+
+Contract: [`list_connections`](mcp-contract.md#list_connections), [`search_messages`](mcp-contract.md#search_messages)
 
 | ID | Action | Expected |
 | --- | --- | --- |
@@ -209,6 +251,8 @@ Run these against a Connection linked within the last few minutes.
 | L6 | Confirm no new WhatsApp Connection joined an existing grant automatically | The new Connection is absent from the old grant's `list_connections`. New Connections never enter an existing grant automatically. |
 
 ### M. Outbound sends — real-world effects
+
+Contract: [`send_text_message`](mcp-contract.md#send_text_message), [`send_pdf_file`](mcp-contract.md#send_pdf_file), [`send_image`](mcp-contract.md#send_image), [`get_send_status`](mcp-contract.md#get_send_status)
 
 **Sends real messages.** Requires `messages:send` and recipient consent. Every
 invocation requires Client Confirmation, including replays and retries after a
@@ -229,14 +273,49 @@ preflight rejection.
 | M11 | Send to a well-formed handle that is unknown, removed, unjoined, or Connection-mismatched | `recipient_not_found`, `retryable: false`, identically for all four. |
 | M12 | `get_send_status` on the `send_id`, repeatedly | Status never regresses; `failed` never replaces `delivered` or `read`; `status_changed_at` reports when the returned state was established. An `unknown` operation is never retried automatically. |
 
-`send_pdf_file` and `send_image` inherit M2 through M11. Add: filename must end
-`.pdf` and carry no path separator or control character; PDF bytes must begin
-`%PDF-x.y` and fall between 8 and 16,777,216 bytes; image bytes must carry a
-JPEG or PNG signature and not exceed 5,000,000 bytes, with MIME derived from
-bytes rather than URL metadata; URL sources must be HTTPS without credentials
-or a custom port, and IP, private, and reserved targets must be rejected.
+#### File sends
+
+`send_pdf_file` and `send_image` inherit M2, M3, M4, and M7 through M11
+unchanged. M5 and M6 validate `text`, which neither tool accepts, so they do
+not transfer as written:
+
+- `send_pdf_file` has no text or caption field. Skip M5 and M6 entirely.
+- `send_image` has an optional `caption` governed by the same Unicode rules as
+  `send_text_message.text`. Run M5 and M6 against `caption`, and additionally
+  confirm that an absent caption and an exactly present caption are distinct
+  idempotency inputs — a replay with one and not the other is a conflict, not
+  a replay.
+
+Add the type-specific cases below. `file_name` must be 5-255 characters, carry
+no path separator or control character, and end in `.pdf` case-insensitively.
+PDF bytes must begin `%PDF-x.y` with `x` in 1-9 and `y` in 0-9, and fall
+between 8 and 16,777,216 bytes. Image bytes must carry a JPEG signature
+(`FF D8 FF`) or the full eight-byte PNG signature, must not exceed 5,000,000
+bytes, and MIME must be derived from the bytes rather than from URL metadata —
+so a PNG served as `image/jpeg` normalizes by signature.
+
+#### URL sources
+
+The contract requires HTTPS without credentials or a custom port, resolves
+every hostname to global addresses only, rejects IP, private, and reserved
+targets, and follows at most three manually validated redirects. Redirect
+targets are re-validated, not trusted, so each hop needs its own case.
+
+| ID | Action | Expected |
+| --- | --- | --- |
+| M13 | Source URL over `http://` | Rejected. HTTPS only. |
+| M14 | HTTPS URL with embedded credentials, then one with a custom port | Both rejected. |
+| M15 | HTTPS URL whose hostname resolves to loopback, a private range, or a reserved range, and one that is a bare IP literal | All rejected. Hostnames resolve only to global addresses. |
+| M16 | HTTPS redirect chain of four hops | Rejected at the fourth. At most three redirects are followed. |
+| M17 | HTTPS URL redirecting to `http://`, and to loopback, private, and reserved targets | Each rejected at the redirect. Every hop is validated, not just the first URL. |
+| M18 | Hostname that resolves to a global address on first lookup and a non-global one at fetch time | Rejected. Needs a controlled DNS host with a short TTL; record as BLOCKED if unavailable rather than passing it by default. |
+
+Confirm across M13 through M18 that no source URL, filename, or byte content
+appears in any error message, receipt, or log.
 
 ### N. Not-found and error-shape boundary
+
+Contract: [Common Rules](mcp-contract.md#common-rules)
 
 | ID | Action | Expected |
 | --- | --- | --- |
@@ -295,18 +374,44 @@ condition that was never varied: the Connection had zero observed Stored
 Messages, and therefore zero WhatsApp Conversations. Case F8 covers that state
 and is the reproduction to try first.
 
-**D-2 — `retryable: true` on a deterministic failure.** D-1 has never once
-succeeded, yet reports `retryable: true`. Per the contract, `retryable`
-describes whether a later invocation could succeed, so clients are being
-instructed to spend retries and daily quota on an operation that cannot.
+**D-2 — `retryable: true` is indistinguishable from a transient here.** D-1 has
+not once succeeded across twenty calls and two days, yet every failure reports
+`retryable: true`. Per the contract, `retryable` describes whether a later
+invocation could succeed.
 
-**D-3 — `stale` and `partial` carry two incompatible meanings.** During initial
-sync they mean "not ready yet, wait"; on an unavailable Connection they mean
-"the source cannot be confirmed", which waiting never resolves. Both present
-identically, as does `conversation_id: null`, which covers both "no retained
-activity" and "sync has not reached this entry". A client cannot distinguish
-"not ready" from "empty" from "stalled" from the response alone. Cases K3 and
-K4 record it.
+Stated carefully, because the two claims differ in strength. Twenty failures do
+not *prove* that no later call can ever succeed; that would need controlled
+evidence, and none exists while the reproduction in D-1 is itself unconfirmed.
+What the observations do establish is that the flag has never once been
+supported by an outcome, and that a client has no way to tell this from an
+ordinary transient — so the only strategy the flag licenses is retry, and retry
+has never worked.
+
+On cost: each attempt consumes request-frequency quota, since the protected
+operation begins before the failure. It does **not** appear to consume
+`READ_MESSAGE_RECORDS_PER_DAY`, which is accounted on records actually
+returned, and a failing call returns none. An earlier draft of this defect
+claimed daily-quota impact; that was wrong and is corrected here.
+
+**D-3 — `stale` and `partial` cannot separate "still syncing" from "stalled".**
+Being precise about what does and does not collide, because the two are easy to
+conflate:
+
+`partial` *does* separate an empty page mid-initial-sync (`partial: true`) from
+a fully synced account that is genuinely empty (`partial: false`). That much
+works.
+
+What no field separates is *why* `partial: true` is set. During initial sync it
+means "not ready yet, wait", and waiting resolves it. On an unavailable
+Connection it means "the source cannot be confirmed", and waiting never
+resolves it. Both present as `stale: true, partial: true` with a frozen
+`as_of`. A client that retries on the first reading loops forever on the
+second. `conversation_id: null` has the same problem in miniature: it covers
+both "no retained activity" and "sync has not reached this entry".
+
+Cases K3 and K4 record the collision. The fix is a contract decision, not a
+bug fix — a distinct reason code, or a documented rule for telling the two
+apart.
 
 **D-4 — `read_messages` is unreachable when `list_chats` is down.** The contract
 names three sources of a `cvs_` handle: `list_contacts.conversation_id`,
